@@ -1,0 +1,292 @@
+# (c) 2017 Amazon Web Services, Inc. or its affiliates. All Rights Reserved. This AWS Content is provided subject to the terms of the AWS Customer
+# Agreement available at https://aws.amazon.com/agreement/ or other written agreement between Customer and Amazon Web Services, Inc.
+AWSTemplateFormatVersion: '2010-09-09'
+Description: RDS SQL Server Standard
+Metadata:
+    AWS::CloudFormation::Interface:
+        ParameterGroups: # ParameterGroups
+            - # Database Information
+                Label:
+                    default: "Database Information"
+                Parameters:
+                    - pDatabaseInstanceType
+                    - pDBInstanceIdentifier
+                    - pDatabaseBackupRetentionPeriod
+                    - pDatabaseMasterUsername
+                    - pDatabaseMasterPassword
+                    - pDatabasePort
+                    - pEBApplicationBucketName
+            - # VPC Information
+                Label:
+                    default: "VPC Information"
+                Parameters:
+                    - pVpcStackName
+                    - pVpcId
+                    - pPrivateSubnet1
+                    - pPrivateSubnet2
+        ParameterLabels:
+            pDatabaseInstanceType:
+                default: Database Instance Type
+            pDatabaseBackupRetentionPeriod:
+                default: Database Backup Retention Period
+            pDBInstanceIdentifier:
+                default: Database Instance Identifier
+            pDatabaseMasterUsername:
+                default: Database Master Username
+            pDatabaseMasterPassword:
+                default: Database Master Password
+            pDatabasePort:
+                default: Database Port
+            pEBApplicationBucketName:
+                default: Name of the S3 bucket that the Database Backup file - SQL.bak is located.
+            pVpcStackName:
+                default: VPC Stack Name
+            pPrivateSubnet1:
+                default: VPC Template import override for Subnet-ID for Private Subnet 1
+            pPrivateSubnet2:
+                default: VPC Template import override for Subnet-ID for Private Subnet 2
+            pVpcId:
+                default: VPC Template import override for VPC-ID
+Parameters:
+    pDatabaseInstanceType: # RDS Instance Type
+        Type: String
+        Default: db.m4.large
+        AllowedValues:
+        - db.m1.small
+        - db.m4.large
+        - db.m4.xlarge
+        - db.m4.2xlarge
+        - db.m4.4xlarge
+        - db.m4.10xlarge
+        - db.m4.16xlarge
+        - db.r3.xlarge
+        - db.r3.2xlarge
+        - db.r3.4xlarge
+        - db.r3.8xlarge
+        - db.r4.xlarge
+        - db.r4.2xlarge
+        - db.r4.4xlarge
+        - db.r4.8xlarge
+        - db.r4.16xlarge
+        Description: The instance type to use for the database.
+    pDatabaseBackupRetentionPeriod: # RDS Database Backup Retention Period
+        Type: String
+        Default: 7
+        AllowedValues:
+        - 1
+        - 7
+        Description: The database backup retention period in days.
+    pDBInstanceIdentifier: # RDS Instance Identifier
+        Type: String
+        Description: Database Instance Identifier
+        Default: HELPPRDDB
+    pDatabaseMasterUsername: # RDS Master Username
+        Type: String
+        Description: >-
+              User name for the account that will be used as Domain Administrator. This
+              is separate from the default "Administrator" account
+        Default: HELPADM
+        AllowedPattern: '[a-zA-Z0-9]*'
+        MaxLength: '25'
+        MinLength: '5'
+    pDatabaseMasterPassword: # RDS Master Password
+        Type: String
+        Description: Password for the Master database user. Must be at least 8 characters containing letters, numbers and symbols
+        MaxLength: '32'
+        MinLength: '8'
+        NoEcho: 'true'
+    pDatabasePort: # RDS Database Port Number
+        Type: Number
+        Default: 1433
+        Description: The port number on which the DB instances in the cluster can accept connections
+    pEBApplicationBucketName:
+        Type: String
+        Description: The S3 Bucket that will be used to hold the database backup file.
+    pVpcStackName: # Conditional: Required if using imports from VPC Stack
+        Type: String
+        Description: The VPC CloudFormation Stack Name
+    pPrivateSubnet1: # VPC Private Subnet 1
+        Type: String
+        Description: Private Database Subnet 1, Leave at "None" to import from VPC template
+        Default: None
+    pPrivateSubnet2: # VPC Private Subnet 2
+        Type: String
+        Description: Private Database Subnet 2, Leave at "None" to import from VPC template
+        Default: None
+    pVpcId: # VPC-ID
+        Type: String
+        Description: VPC Id, Leave at "None" to import from VPC template
+        Default: None
+Conditions:
+# If pVpcId is 'None', then use Imports from 01_vpc.yml for VPC-ID
+    cUsesVPCId: !Or
+        - !Equals
+            - !Ref pVpcId
+            - None
+        - !Equals
+            - !Ref pVpcId
+            - none
+# If pPrivateSubnet1 is 'None', then use Imports from vpc.yml for Public Subnet 1
+    cUsesPrivateSubnet1SubnetId: !Or
+        - !Equals
+            - !Ref pPrivateSubnet1
+            - None
+        - !Equals
+            - !Ref pPrivateSubnet1
+            - none
+# If pPrivateSubnet2 is 'None', then use Imports from vpc.yml for Public Subnet 2
+    cUsesPrivateSubnet2SubnetId: !Or
+        - !Equals
+            - !Ref pPrivateSubnet2
+            - None
+        - !Equals
+            - !Ref pPrivateSubnet2
+            - none
+Resources:
+    rElasticBeanstalkSecurityGroup: # ElasticBeanstalk Security Group
+        Type: AWS::EC2::SecurityGroup
+        Properties:
+            GroupDescription: Allow RDS access from anything attached to this SG
+            VpcId: !If
+                - cUsesVPCId
+                - 'Fn::ImportValue': !Sub "${pVpcStackName}-oVpcId"
+                - !Ref 'pVpcId'
+    rElasticBeanstalkSecurityGroupIngress: # Adding the Database Port Number to the ElasticBeanstalk Security Group
+        Type: AWS::EC2::SecurityGroupIngress
+        Properties:
+            GroupId: !GetAtt 'rElasticBeanstalkSecurityGroup.GroupId'
+            IpProtocol: tcp
+            FromPort: !Ref 'pDatabasePort'
+            ToPort: !Ref 'pDatabasePort'
+            SourceSecurityGroupId: !GetAtt 'rElasticBeanstalkSecurityGroup.GroupId'
+    rDatabaseImportRole:
+        Type: "AWS::IAM::Role"
+        Properties:
+            RoleName: !Sub 'RDS-Import-Role-${AWS::StackName}'
+            AssumeRolePolicyDocument:
+                Version: "2012-10-17"
+                Statement:
+                    -
+                        Effect: "Allow"
+                        Principal:
+                            Service:
+                                - "rds.amazonaws.com"
+                        Action:
+                            - "sts:AssumeRole"
+            Path: "/service-role/"
+            Policies:
+                -   PolicyName: !Sub 'RDS-Import-Policy-${AWS::StackName}'
+                    PolicyDocument:
+                        Version: '2012-10-17'
+                        Statement:
+                            -   Effect: Allow
+                                Action:
+                                    - 's3:ListBucket'
+                                    - 's3:GetBuctketLocation'
+                                Resource:
+                                    - !Sub 'arn:aws:s3:::${pEBApplicationBucketName}'
+                            -   Effect: Allow
+                                Action:
+                                    - 's3:GetObjectMetaData'
+                                    - 's3:GetObject'
+                                    - 's3:PutObject'
+                                    - 's3:ListMultipartUploadParts'
+                                    - 's3:AbortMultipartUpload'
+                                Resource:
+                                    - !Sub 'arn:aws:s3:::${pEBApplicationBucketName}*'
+                                    - !Sub 'arn:aws:s3:::${pEBApplicationBucketName}/*'
+    rRDSDirectoryServiceAccessRole:
+        Type: "AWS::IAM::Role"
+        Properties:
+            RoleName: !Sub 'RDS-Directory-Service-Access-Role-${AWS::StackName}'
+            AssumeRolePolicyDocument:
+                Version: "2012-10-17"
+                Statement:
+                    -
+                        Effect: "Allow"
+                        Principal:
+                            Service:
+                                - "rds.amazonaws.com"
+                        Action:
+                            - "sts:AssumeRole"
+            Path: "/service-role/"
+            Policies:
+                -   PolicyName: !Sub 'RDS-Directory-Service-Access-${AWS::StackName}'
+                    PolicyDocument:
+                        Version: '2012-10-17'
+                        Statement:
+                            -   Effect: Allow
+                                Action:
+                                    - 'ds:DescribeDirectories'
+                                    - 'ds:AuthorizeApplication'
+                                    - 'ds:UnauthorizeApplication'
+                                Resource: '*'
+    rDatabasePrimaryInstance: # RDS Primary Database with MultiAZ
+        Type: AWS::RDS::DBInstance
+        Properties:
+            Engine: sqlserver-se
+            EngineVersion: 11.00.6594.0.v1
+            LicenseModel: license-included
+            MasterUsername: !Ref 'pDatabaseMasterUsername'
+            MasterUserPassword: !Ref 'pDatabaseMasterPassword'
+            DBInstanceClass: !Ref 'pDatabaseInstanceType'
+            StorageType: gp2
+            AllocatedStorage: 200
+            MultiAZ: true
+            DBInstanceIdentifier: !Ref 'pDBInstanceIdentifier'
+            BackupRetentionPeriod: !Ref 'pDatabaseBackupRetentionPeriod'
+            DBSubnetGroupName: !Ref rDatabaseSubnetGroup
+            OptionGroupName: !Ref rDatabaseOptionsGroup
+            VPCSecurityGroups:
+                - !GetAtt 'rElasticBeanstalkSecurityGroup.GroupId'
+                - sg-3dc68348
+    rDatabaseSubnetGroup: # RDS Subnet Group
+        Type: AWS::RDS::DBSubnetGroup
+        Properties:
+            DBSubnetGroupDescription: CloudFormation managed DB subnet group.
+            SubnetIds:
+              - !If
+                - cUsesPrivateSubnet1SubnetId
+                - 'Fn::ImportValue': !Sub "${pVpcStackName}-oPrivateSubnet1"
+                - !Ref 'pPrivateSubnet1'
+              - !If
+                - cUsesPrivateSubnet2SubnetId
+                - 'Fn::ImportValue': !Sub "${pVpcStackName}-oPrivateSubnet2"
+                - !Ref 'pPrivateSubnet2'
+    rDatabaseOptionsGroup: # RDS SQL Options Group for Importing DB from SQL database.bak file.
+        Type: AWS::RDS::OptionGroup
+        Properties:
+            EngineName: sqlserver-se
+            MajorEngineVersion: '11.00'
+            OptionGroupDescription: 'Import Option'
+            OptionConfigurations:
+                - OptionName: SQLSERVER_BACKUP_RESTORE
+                  OptionSettings:
+                      - Name: IAM_ROLE_ARN
+                        Value: !GetAtt 'rDatabaseImportRole.Arn'
+Outputs:
+    oDatabaseEndpoint: # RDS Database Endpoint
+        Description: The connection endpoint for the SQL Enterprise Edition Database
+        Value: !GetAtt 'rDatabasePrimaryInstance.Endpoint.Address'
+        Export:
+            Name: !Join ['-', [!Ref 'AWS::StackName', oDatabaseEndpoint]]
+    oEbInstanceSecurityGroup: # ElasticBeanstlak Security Group
+        Description: Output for the EB Security Group
+        Value: !Ref 'rElasticBeanstalkSecurityGroup'
+        Export:
+            Name: !Join ['-', [!Ref 'AWS::StackName', oEbInstanceSecurityGroup]]
+    oDBMasterUsername: # Database Master Username
+        Description: The Master username for the SQL Enterprise Edition Database
+        Value: !Ref pDatabaseMasterUsername
+        Export:
+            Name: !Sub "${AWS::StackName}-oDBMasterUsername"
+    oDBMasterPassword: # Database Master Password
+        Description: The Master Password for the SQL Enterprise Edition Database
+        Value: !Ref pDatabaseMasterPassword
+        Export:
+            Name: !Sub '${AWS::StackName}-oDBMasterPassword'
+    oDBPort: # Database Port number
+        Description: The Database Port Number
+        Value: !Ref pDatabasePort
+        Export:
+            Name: !Sub '${AWS::StackName}-oDBPort'
